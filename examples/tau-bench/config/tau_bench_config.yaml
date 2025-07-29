@@ -1,0 +1,75 @@
+actor_rollout_ref:
+  actor:
+    entropy_coeff: 0
+    fsdp_config:
+      param_offload: true
+    kl_loss_coef: 0.001
+    kl_loss_type: low_var_kl
+    optim:
+      lr: 1.0e-06
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_mini_batch_size: 8
+    use_kl_loss: true
+  hybrid_engine: true
+  model:
+    enable_gradient_checkpointing: true
+    lora_alpha: 64
+    lora_rank: 0
+    path: Qwen/Qwen2.5-14B-Instruct
+    target_modules: all-linear
+    use_remove_padding: true
+    use_shm: false
+  ref:
+    fsdp_config:
+      optimizer_offload: true
+      param_offload: true
+    log_prob_micro_batch_size_per_gpu: 1
+  rollout:
+    gpu_memory_utilization: 0.5
+    layered_summon: false
+    load_format: dummy_dtensor
+    log_prob_micro_batch_size_per_gpu: 1
+    multi_turn:
+      enable: true
+      max_assistant_turns: 30
+      tool_config_path: $PROJECT_DIR/examples/tau-bench/config/tool_config/tau_bench_tool_config.yaml
+    n: 8
+    name: sglang
+    tensor_model_parallel_size: 4
+algorithm:
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: true
+  use_kl_in_reward: false
+custom_reward_function:
+  name: compute_score
+  path: verl/utils/reward_score/tau_bench.py
+data:
+  filter_overlong_prompts: true
+  max_prompt_length: 16384
+  max_response_length: 1024
+  return_raw_chat: true
+  train_batch_size: 8
+  train_files: $HOME/data/tau-bench/train.parquet
+  truncation: error
+  val_files: $HOME/data/tau-bench/test.parquet
+defaults:
+- ppo_trainer
+- _self_
+hydra:
+  searchpath:
+  - file://verl/trainer/config
+reward_model:
+  enable: false
+  reward_manager: naive
+trainer:
+  critic_warmup: 0
+  experiment_name: q14b_orig_user_prompt
+  logger:
+  - console
+  - wandb
+  n_gpus_per_node: 8
+  nnodes: 1
+  project_name: tau_bench_verl_test
+  save_freq: -1
+  test_freq: 10
+  total_epochs: 200

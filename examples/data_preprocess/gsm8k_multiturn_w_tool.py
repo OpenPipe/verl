@@ -36,7 +36,7 @@ def extract_solution(solution_str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--local_dir", default="~/data/gsm8k")
+    parser.add_argument("--local_dir", default="~/data/gsm8k_verl_sgl_multi_turn_w_interaction")
     parser.add_argument("--hdfs_dir", default=None)
 
     args = parser.parse_args()

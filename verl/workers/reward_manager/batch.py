@@ -57,7 +57,20 @@ class BatchRewardManager:
 
         ground_truths = [item.non_tensor_batch["reward_model"].get("ground_truth", None) for item in data]
         data_sources = data.non_tensor_batch[self.reward_fn_key]
-        extras = data.non_tensor_batch.get("extra_info", [None] * len(data))
+        messages = data.non_tensor_batch.get("messages", [None] * len(data))
+        reward_scores = data.non_tensor_batch.get("reward_scores", [None] * len(data))
+        extra_info = data.non_tensor_batch.get("extra_info", [None] * len(data))
+        print(f"DATA LENGTH: {len(data)}")
+        # print(f"EXTRA_INFO: {extra_info}")
+
+        extras = [
+            {
+                "task_idx": curr_extra_info["index"],
+                "messages": curr_messages["messages"],
+                "reward": curr_reward_scores["tau_bench_reward"][0],
+            }
+            for curr_messages, curr_extra_info, curr_reward_scores in zip(messages, extra_info, reward_scores)
+        ]
 
         scores = self.compute_score(
             data_sources=data_sources,
@@ -66,6 +79,7 @@ class BatchRewardManager:
             extra_infos=extras,
             **self.reward_kwargs,
         )
+        # print(f"SCORES: {scores}")
 
         return scores
 
