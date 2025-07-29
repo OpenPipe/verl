@@ -16,8 +16,9 @@ Metrics related to the PPO trainer.
 """
 
 from collections import defaultdict
+import copy
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -101,6 +102,10 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
             - prompt_length/mean, max, min, clip_ratio: Statistics about prompt lengths
             - num_turns/mean, max, min: Statistics about the number of multi-turn conversations
     """
+    aux_metrics = {
+        f"critic/{k}/mean": np.mean(v) for k, v in batch.non_tensor_batch.items() if k.startswith("aux_metric_")
+    }
+
     sequence_score = batch.batch["token_level_scores"].sum(-1)
     sequence_reward = batch.batch["token_level_rewards"].sum(-1)
 
@@ -169,6 +174,8 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "prompt_length/min": torch.min(prompt_length).detach().item(),
         "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
     }
+
+    metrics.update(aux_metrics)
 
     # multi-turn conversation
     if "__num_turns__" in batch.non_tensor_batch:
@@ -336,7 +343,11 @@ def calc_maj_val(data: list[dict[str, Any]], vote_key: str, val_key: str) -> flo
 
 
 def process_validation_metrics(
-    data_sources: list[str], sample_inputs: list[str], infos_dict: dict[str, list[Any]], seed: int = 42
+    data_sources: list[str],
+    sample_inputs: list[str],
+    infos_dict: dict[str, list[Any]],
+    index_lst: Optional[list[int]] = None,
+    seed: int = 42,
 ) -> dict[str, dict[str, dict[str, float]]]:
     """
     Process validation metrics into a structured format with statistical analysis.
@@ -380,6 +391,11 @@ def process_validation_metrics(
         >>> # result will contain statistics for each data source and variable
     """
     # Group metrics by data source, prompt and variable
+
+    if index_lst is not None:
+        # if provided an index list, use that to get unique inputs, not the prompts from sample inputs
+        sample_inputs = copy.deepcopy(index_lst)
+
     data_src2prompt2var2vals = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     for sample_idx, data_source in enumerate(data_sources):
         prompt = sample_inputs[sample_idx]

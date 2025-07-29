@@ -322,6 +322,7 @@ class RLHFDataset(Dataset):
         need_tools_kwargs = row_dict.get("extra_info", {}).get("need_tools_kwargs", self.need_tools_kwargs)
         if need_tools_kwargs and not tools_kwargs:
             logger.warning("tools_kwargs is empty for index {}, data source: {}", index, row_dict["data_source"])
+        # print(f"DEBUG: Setting row_dict keys: index={index}, tools_kwargs keys={list(tools_kwargs.keys())}")
         row_dict["index"] = index
         row_dict["tools_kwargs"] = tools_kwargs
         row_dict["interaction_kwargs"] = interaction_kwargs
