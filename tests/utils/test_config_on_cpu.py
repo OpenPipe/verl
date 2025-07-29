@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import unittest
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from omegaconf import OmegaConf
 
@@ -30,16 +30,13 @@ class TestDataclass:
 class TestTrainConfig:
     batch_size: int
     model: TestDataclass
-    override_config: dict = field(default_factory=dict)
 
 
 _cfg_str = """train_config:
-  _target_: tests.utils.test_config_on_cpu.TestTrainConfig
   batch_size: 32
   model:
     hidden_size: 768
-    activation: relu
-  override_config: {}"""
+    activation: relu"""
 
 
 class TestConfigOnCPU(unittest.TestCase):
@@ -68,30 +65,6 @@ class TestConfigOnCPU(unittest.TestCase):
         self.assertEqual(cfg.model.activation, "relu")
         assert isinstance(cfg, TestTrainConfig)
         assert isinstance(cfg.model, TestDataclass)
-
-
-class TestPrintCfgCommand(unittest.TestCase):
-    """Test suite for the print_cfg.py command-line tool."""
-
-    def test_command_with_override(self):
-        """Test that the command runs without error when overriding config values."""
-        import subprocess
-
-        # Run the command
-        result = subprocess.run(
-            ["python3", "scripts/print_cfg.py", "critic.profiler.discrete=True", "+critic.profiler.extra.any_key=val"],
-            capture_output=True,
-            text=True,
-        )
-
-        # Verify the command exited successfully
-        self.assertEqual(result.returncode, 0, f"Command failed with stderr: {result.stderr}")
-
-        # Verify the output contains expected config information
-        self.assertIn("critic", result.stdout)
-        self.assertIn("profiler", result.stdout)
-        self.assertIn("discrete=True", result.stdout)
-        self.assertIn("extra={'any_key': 'val'}", result.stdout)
 
 
 if __name__ == "__main__":

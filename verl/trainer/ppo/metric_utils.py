@@ -16,8 +16,9 @@ Metrics related to the PPO trainer.
 """
 
 from collections import defaultdict
+import copy
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -27,7 +28,7 @@ from verl.utils.import_utils import deprecated
 
 
 @deprecated("verl.utils.metric.reduce_metrics")
-def reduce_metrics(metrics: dict[str, list[Any]]) -> dict[str, Any]:
+def reduce_metrics(metrics: Dict[str, List[Any]]) -> Dict[str, Any]:
     """
     Reduces a dictionary of metric lists by computing the mean of each list.
 
@@ -47,7 +48,7 @@ def reduce_metrics(metrics: dict[str, list[Any]]) -> dict[str, Any]:
     return reduce_metrics(metrics)
 
 
-def _compute_response_info(batch: DataProto) -> dict[str, Any]:
+def _compute_response_info(batch: DataProto) -> Dict[str, Any]:
     """
     Computes information about prompts and responses from a batch.
 
@@ -77,7 +78,7 @@ def _compute_response_info(batch: DataProto) -> dict[str, Any]:
     )
 
 
-def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str, Any]:
+def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str, Any]:
     """
     Computes various metrics from a batch of data for PPO training.
 
@@ -101,6 +102,10 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
             - prompt_length/mean, max, min, clip_ratio: Statistics about prompt lengths
             - num_turns/mean, max, min: Statistics about the number of multi-turn conversations
     """
+    aux_metrics = {
+        f"critic/{k}/mean": np.mean(v) for k, v in batch.non_tensor_batch.items() if k.startswith("aux_metric_")
+    }
+
     sequence_score = batch.batch["token_level_scores"].sum(-1)
     sequence_reward = batch.batch["token_level_rewards"].sum(-1)
 
@@ -170,6 +175,8 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
     }
 
+    metrics.update(aux_metrics)
+
     # multi-turn conversation
     if "__num_turns__" in batch.non_tensor_batch:
         num_turns = batch.non_tensor_batch["__num_turns__"]
@@ -180,7 +187,7 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     return metrics
 
 
-def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> dict[str, Any]:
+def compute_timing_metrics(batch: DataProto, timing_raw: Dict[str, float]) -> Dict[str, Any]:
     """
     Computes timing metrics for different processing stages in PPO training.
 
@@ -222,7 +229,7 @@ def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> di
     }
 
 
-def compute_throughout_metrics(batch: DataProto, timing_raw: dict[str, float], n_gpus: int) -> dict[str, Any]:
+def compute_throughout_metrics(batch: DataProto, timing_raw: Dict[str, float], n_gpus: int) -> Dict[str, Any]:
     """
     Computes throughput metrics for PPO training.
 
@@ -336,7 +343,11 @@ def calc_maj_val(data: list[dict[str, Any]], vote_key: str, val_key: str) -> flo
 
 
 def process_validation_metrics(
-    data_sources: list[str], sample_inputs: list[str], infos_dict: dict[str, list[Any]], seed: int = 42
+    data_sources: list[str],
+    sample_inputs: list[str],
+    infos_dict: dict[str, list[Any]],
+    index_lst: Optional[list[int]] = None,
+    seed: int = 42,
 ) -> dict[str, dict[str, dict[str, float]]]:
     """
     Process validation metrics into a structured format with statistical analysis.
@@ -380,6 +391,11 @@ def process_validation_metrics(
         >>> # result will contain statistics for each data source and variable
     """
     # Group metrics by data source, prompt and variable
+
+    if index_lst is not None:
+        # if provided an index list, use that to get unique inputs, not the prompts from sample inputs
+        sample_inputs = copy.deepcopy(index_lst)
+
     data_src2prompt2var2vals = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     for sample_idx, data_source in enumerate(data_sources):
         prompt = sample_inputs[sample_idx]
@@ -416,9 +432,7 @@ def process_validation_metrics(
                         metric[f"best@{n}/mean"], metric[f"best@{n}/std"] = bon_mean, bon_std
                         metric[f"worst@{n}/mean"], metric[f"worst@{n}/std"] = won_mean, won_std
                         if var2vals.get("pred", None) is not None:
-                            vote_data = [
-                                {"val": val, "pred": pred} for val, pred in zip(var_vals, var2vals["pred"], strict=True)
-                            ]
+                            vote_data = [{"val": val, "pred": pred} for val, pred in zip(var_vals, var2vals["pred"])]
                             [(maj_n_mean, maj_n_std)] = bootstrap_metric(
                                 data=vote_data,
                                 subset_size=n,

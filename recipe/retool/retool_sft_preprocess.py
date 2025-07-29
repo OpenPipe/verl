@@ -16,9 +16,8 @@ Convert JoeYing/ReTool-SFT to standard multi-turn tool calling messages.
 """
 
 import json
-import os
 import re
-from typing import Any
+from typing import Any, Dict, Tuple
 
 import datasets
 from omegaconf import OmegaConf
@@ -26,7 +25,7 @@ from omegaconf import OmegaConf
 code_pattern = re.compile(r"```python(.*?)```", re.DOTALL)
 
 
-def extract_code_message(content: str) -> tuple[dict[str, Any], str]:
+def extract_code_message(content: str) -> Tuple[Dict[str, Any], str]:
     start, stop = "<code>", "</code>"
     i = content.find(start)
     if i == -1:
@@ -55,7 +54,7 @@ def extract_code_message(content: str) -> tuple[dict[str, Any], str]:
     return message, content[j + len(stop) :]
 
 
-def extract_answer_message(content: str) -> tuple[dict[str, Any], str]:
+def extract_answer_message(content: str) -> Tuple[Dict[str, Any], str]:
     start, stop = "<answer>", "</answer>"
     i = content.find(start)
     if i == -1:
@@ -71,7 +70,7 @@ def extract_answer_message(content: str) -> tuple[dict[str, Any], str]:
     return message, content[j + len(stop) :]
 
 
-def extract_interpreter_message(content: str) -> tuple[dict[str, Any], str]:
+def extract_interpreter_message(content: str) -> Tuple[Dict[str, Any], str]:
     start, stop = "<interpreter>", "</interpreter>"
     i = content.find(start)
     if i == -1:
@@ -87,7 +86,7 @@ def extract_interpreter_message(content: str) -> tuple[dict[str, Any], str]:
     return message, content[j + len(stop) :]
 
 
-def process(row: dict, *, tools: str):
+def process(row: Dict, *, tools: str):
     messages = []
 
     # extract problem
@@ -120,7 +119,6 @@ def process(row: dict, *, tools: str):
             messages.append(message)
             role = "assistant"
 
-    tools = json.loads(tools)
     return {"messages": messages, "tools": tools}
 
 
@@ -132,5 +130,4 @@ if __name__ == "__main__":
 
     data = datasets.load_dataset("JoeYing/ReTool-SFT")["train"]
     data = data.map(process, fn_kwargs={"tools": tools})
-    save_path = os.path.expanduser("~/ReTool-SFT/data/train-00000-of-00001.parquet")
-    data.to_parquet(save_path)
+    data.to_parquet("wuxibin/ReTool-SFT/data/train-00000-of-00001.parquet")

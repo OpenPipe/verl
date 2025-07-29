@@ -21,7 +21,7 @@ on rollout data.
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import List, Optional, Union
 
 import datasets
 from omegaconf import DictConfig
@@ -73,7 +73,7 @@ class DynamicGenDataset(RLHFDataset):
 
     def __init__(
         self,
-        data_files: str | list[str],
+        data_files: Union[str, List[str]],
         tokenizer: PreTrainedTokenizer,
         config: DictConfig,
         processor: Optional[ProcessorMixin] = None,

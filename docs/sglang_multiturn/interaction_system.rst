@@ -183,12 +183,15 @@ The GSM8K interaction demonstrates a complete implementation for math problem-so
             # Extract last user message content
             content = ""
             for item in reversed(messages):
-                if item.get("role") == "assistant":
+                if item.get("role") == "user":
                     content = item.get("content", "")
                     break
 
             # Ensure GSM8K format (#### prefix)
-            self._instance_dict[instance_id]["response"] = content
+            if content.startswith("#### "):
+                self._instance_dict[instance_id]["response"] = content
+            else:
+                self._instance_dict[instance_id]["response"] = "#### " + content
 
             reward = await self.calculate_score(instance_id)
             if reward == 1.0:
@@ -200,7 +203,7 @@ The GSM8K interaction demonstrates a complete implementation for math problem-so
             return gsm8k.compute_score(
                 self._instance_dict[instance_id]["response"],
                 self._instance_dict[instance_id]["ground_truth"],
-                method="strict", format_score=0.0, score=1.0,
+                method="flexible", format_score=0.0, score=1.0,
             )
 
         async def finalize_interaction(self, instance_id, **kwargs):
@@ -299,7 +302,7 @@ Comprehensive testing is essential for interaction systems:
         # Test complete workflow
         instance_id = await interaction.start_interaction(ground_truth="expected_answer")
         
-        messages = [{"role": "user", "content": "user_content"}, {"role": "assistant", "content": "assistant_response"}]
+        messages = [{"role": "user", "content": "user_response"}]
         should_terminate, response, reward, metadata = await interaction.generate_response(instance_id, messages)
         
         assert should_terminate in [True, False]

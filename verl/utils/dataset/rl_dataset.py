@@ -19,7 +19,7 @@ import logging
 import os
 import re
 from collections import defaultdict
-from typing import Optional
+from typing import List, Optional, Union
 
 import datasets
 import numpy as np
@@ -84,12 +84,12 @@ class RLHFDataset(Dataset):
 
     def __init__(
         self,
-        data_files: str | list[str],
+        data_files: Union[str, List[str]],
         tokenizer: PreTrainedTokenizer,
         config: DictConfig,
         processor: Optional[ProcessorMixin] = None,
     ):
-        if not isinstance(data_files, list | ListConfig):
+        if not isinstance(data_files, (List, ListConfig)):
             data_files = [data_files]
 
         self.data_files = copy.deepcopy(data_files)
@@ -156,8 +156,12 @@ class RLHFDataset(Dataset):
                     raw_prompt = self.processor.apply_chat_template(
                         messages, add_generation_prompt=True, tokenize=False
                     )
-                    images = [process_image(image) for image in doc[image_key]] if image_key in doc else None
-                    videos = [process_video(video) for video in doc[video_key]] if video_key in doc else None
+                    images = (
+                        [process_image(image) for image in messages.pop(image_key)] if image_key in messages else None
+                    )
+                    videos = (
+                        [process_video(video) for video in messages.pop(video_key)] if video_key in messages else None
+                    )
 
                     return len(processor(text=[raw_prompt], images=images, videos=videos)["input_ids"][0])
 
@@ -322,6 +326,7 @@ class RLHFDataset(Dataset):
         need_tools_kwargs = row_dict.get("extra_info", {}).get("need_tools_kwargs", self.need_tools_kwargs)
         if need_tools_kwargs and not tools_kwargs:
             logger.warning("tools_kwargs is empty for index {}, data source: {}", index, row_dict["data_source"])
+        # print(f"DEBUG: Setting row_dict keys: index={index}, tools_kwargs keys={list(tools_kwargs.keys())}")
         row_dict["index"] = index
         row_dict["tools_kwargs"] = tools_kwargs
         row_dict["interaction_kwargs"] = interaction_kwargs

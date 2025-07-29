@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+from typing import List, Union
 
 import pandas as pd
 import torch
@@ -38,7 +39,7 @@ def download_files_distributed(download_fn):
 class RMDataset(Dataset):
     def __init__(
         self,
-        parquet_files: str | list[str],
+        parquet_files: Union[str, List[str]],
         tokenizer,
         prompt_key="prompt",
         chosen_key="chosen",
@@ -47,7 +48,7 @@ class RMDataset(Dataset):
         add_eos=True,
         cache_dir="~/.cache/verl/rm",
     ):
-        if not isinstance(parquet_files, list):
+        if not isinstance(parquet_files, List):
             parquet_files = [parquet_files]
 
         self.parquet_files = parquet_files

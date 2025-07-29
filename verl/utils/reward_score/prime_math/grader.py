@@ -96,6 +96,7 @@ import contextlib
 import math
 import re
 from math import isclose
+from typing import Union
 
 # sympy related
 from sympy import N, simplify
@@ -172,8 +173,8 @@ def handle_pi(string, pi):
 
 
 def math_equal(
-    prediction: bool | float | str,
-    reference: float | str,
+    prediction: Union[bool, float, str],
+    reference: Union[float, str],
     include_percentage: bool = True,
     tolerance: float = 1e-4,
     timeout: float = 10.0,
@@ -250,7 +251,7 @@ def math_equal(
         if len(pred_parts) == len(ref_parts) and all(
             [
                 math_equal(pred_pt, ref_pt, include_percentage, tolerance)
-                for pred_pt, ref_pt in zip(pred_parts, ref_parts, strict=True)
+                for pred_pt, ref_pt in zip(pred_parts, ref_parts)
             ]
         ):
             return True
@@ -276,7 +277,7 @@ def math_equal(
         if len(pred_parts) == len(ref_parts) and all(
             [
                 math_equal(pred_pt, ref_pt, include_percentage, tolerance)
-                for pred_pt, ref_pt in zip(pred_parts, ref_parts, strict=False)
+                for pred_pt, ref_pt in zip(pred_parts, ref_parts)
             ]
         ):
             return True
@@ -289,7 +290,7 @@ def math_equal(
             if len(pred_matrix) == len(ref_matrix_items) and all(
                 [
                     math_equal(pred, ref, include_percentage, tolerance)
-                    for ref, pred in zip(ref_matrix_items, pred_matrix, strict=False)
+                    for ref, pred in zip(ref_matrix_items, pred_matrix)
                 ]
             ):
                 return True
@@ -311,7 +312,7 @@ def math_equal(
                 if len(pred_matrix) == len(ref_matrix_items) and all(
                     [
                         math_equal(pred, ref, include_percentage, tolerance)
-                        for ref, pred in zip(ref_matrix_items, pred_matrix, strict=False)
+                        for ref, pred in zip(ref_matrix_items, pred_matrix)
                     ]
                 ):
                     return True

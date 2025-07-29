@@ -30,6 +30,7 @@
 # limitations under the License.
 
 import os
+import typing
 
 import torch
 
@@ -47,7 +48,7 @@ MAX_TEST_CASES = os.environ.get("MAX_TEST_CASES", 5)
 
 def run_torch_entropy(
     hidden: torch.Tensor, weight: torch.Tensor, labels: torch.Tensor, temperature: float, reduction="none"
-) -> list[torch.Tensor]:
+) -> typing.List[torch.Tensor]:
     hidden = hidden.squeeze(0).to(torch.float32)
     weight = weight.transpose(0, 1).to(torch.float32)
     logits = torch.matmul(hidden, weight)  # [num_tokens, vocab_size]
@@ -66,7 +67,7 @@ def run_verl_original_entropy(
     weight: torch.Tensor,
     labels: torch.Tensor,
     temperature: float,
-) -> list[torch.Tensor]:
+) -> typing.List[torch.Tensor]:
     hidden = hidden.squeeze(0).to(torch.float32)
     weight = weight.transpose(0, 1).to(torch.float32)
     logits = torch.matmul(hidden, weight)  # [num_tokens, vocab_size]

@@ -16,6 +16,7 @@ The base tokenizer class, required for any hybrid engine based rollout or infere
 """
 
 from abc import ABC, abstractmethod
+from typing import Dict, List, Union
 
 import numpy as np
 import torch
@@ -53,7 +54,7 @@ class HybridEngineBaseTokenizer(ABC):
 
     @property
     @abstractmethod
-    def all_special_ids(self) -> list[int]:
+    def all_special_ids(self) -> List[int]:
         """
         `List[int]`: List the ids of the special tokens(`'<unk>'`, `'<cls>'`, etc.) mapped to class attributes.
         """
@@ -61,7 +62,7 @@ class HybridEngineBaseTokenizer(ABC):
 
     @property
     @abstractmethod
-    def all_special_tokens(self) -> list[str]:
+    def all_special_tokens(self) -> List[str]:
         """
         `List[str]`: A list of the unique special tokens (`'<unk>'`, `'<cls>'`, ..., etc.).
 
@@ -88,7 +89,7 @@ class HybridEngineBaseTokenizer(ABC):
     @abstractmethod
     def decode(
         self,
-        token_ids: int | list[int] | np.ndarray | torch.Tensor,
+        token_ids: Union[int, List[int], np.ndarray, torch.Tensor],
         skip_special_tokens: bool = False,
         clean_up_tokenization_spaces: bool = None,
         **kwargs,
@@ -116,7 +117,9 @@ class HybridEngineBaseTokenizer(ABC):
         pass
 
     @abstractmethod
-    def convert_ids_to_tokens(self, ids: int | list[int], skip_special_tokens: bool = False) -> str | list[str]:
+    def convert_ids_to_tokens(
+        self, ids: Union[int, List[int]], skip_special_tokens: bool = False
+    ) -> Union[str, List[str]]:
         """
         Converts a single index or a sequence of indices in a token or a sequence of tokens, using the vocabulary and
         added tokens.
@@ -133,7 +136,7 @@ class HybridEngineBaseTokenizer(ABC):
         pass
 
     @abstractmethod
-    def get_added_vocab(self) -> dict[str, int]:
+    def get_added_vocab(self) -> Dict[str, int]:
         """
         Returns the added tokens in the vocabulary as a dictionary of token to index. Results might be different from
         the fast call because for now we always add the tokens even if they are already in the vocabulary. This is
@@ -145,7 +148,7 @@ class HybridEngineBaseTokenizer(ABC):
         pass
 
     @abstractmethod
-    def convert_tokens_to_string(self, tokens: list[str]) -> str:
+    def convert_tokens_to_string(self, tokens: List[str]) -> str:
         """
         Converts a sequence of tokens in a single string. The most simple way to do it is `" ".join(tokens)` but we
         often want to remove sub-word tokenization artifacts at the same time.

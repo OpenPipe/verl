@@ -13,14 +13,14 @@
 # limitations under the License.
 
 from dataclasses import is_dataclass
-from typing import Any, Optional
+from typing import Any, Dict, Optional, Type, Union
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 __all__ = ["omega_conf_to_dataclass"]
 
 
-def omega_conf_to_dataclass(config: DictConfig | dict, dataclass_type: Optional[type[Any]] = None) -> Any:
+def omega_conf_to_dataclass(config: Union[DictConfig, dict], dataclass_type: Optional[Type[Any]] = None) -> Any:
     """
     Convert an OmegaConf DictConfig to a dataclass.
 
@@ -36,14 +36,13 @@ def omega_conf_to_dataclass(config: DictConfig | dict, dataclass_type: Optional[
     if not config:
         return dataclass_type if dataclass_type is None else dataclass_type()
     # Got an object
-    if not isinstance(config, DictConfig | ListConfig | dict | list):
+    if not isinstance(config, (DictConfig, ListConfig, dict, list)):
         return config
 
     if dataclass_type is None:
         assert "_target_" in config, (
-            "When dataclass_type is not provided, config must contain _target_. "
-            "See trainer/config/ppo_trainer.yaml algorithm section for an example. "
-            f"Got config: {config}"
+            "When dataclass_type is not provided, config must contain _target_."
+            "See trainer/config/ppo_trainer.yaml algorithm section for an example."
         )
         from hydra.utils import instantiate
 
@@ -52,9 +51,6 @@ def omega_conf_to_dataclass(config: DictConfig | dict, dataclass_type: Optional[
     if not is_dataclass(dataclass_type):
         raise ValueError(f"{dataclass_type} must be a dataclass")
     cfg = OmegaConf.create(config)  # in case it's a dict
-    # pop _target_ to avoid hydra instantiate error, as most dataclass do not have _target_
-    if "_target_" in cfg:
-        cfg.pop("_target_")
     cfg_from_dataclass = OmegaConf.structured(dataclass_type)
     # let cfg override the existing vals in `cfg_from_dataclass`
     cfg_merged = OmegaConf.merge(cfg_from_dataclass, cfg)
@@ -63,7 +59,7 @@ def omega_conf_to_dataclass(config: DictConfig | dict, dataclass_type: Optional[
     return config_object
 
 
-def update_dict_with_config(dictionary: dict, config: DictConfig):
+def update_dict_with_config(dictionary: Dict, config: DictConfig):
     for key in dictionary:
         if hasattr(config, key):
             dictionary[key] = getattr(config, key)

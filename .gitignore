@@ -13,7 +13,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
-dataset/*
+# dataset/*
 tensorflow/my_graph/*
 .idea/
 # C extensions
@@ -58,7 +58,6 @@ nosetests.xml
 coverage.xml
 *,cover
 .hypothesis/
-pytest.ini
 
 # Translations
 *.mo

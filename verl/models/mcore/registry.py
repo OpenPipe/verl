@@ -17,7 +17,7 @@ Registry module for model architecture components.
 """
 
 from enum import Enum
-from typing import Callable
+from typing import Callable, Dict, Type
 
 import torch
 import torch.nn as nn
@@ -36,10 +36,6 @@ from .config_converter import (
 from .model_forward import (
     gptmodel_forward,
     gptmodel_forward_qwen2_5_vl,
-)
-from .model_forward_fused import (
-    fused_forward_gptmodel,
-    fused_forward_qwen2_5_vl,
 )
 from .model_initializer import (
     BaseModelInitializer,
@@ -73,7 +69,7 @@ class SupportedModel(Enum):
 
 
 # Registry for model configuration converters
-MODEL_CONFIG_CONVERTER_REGISTRY: dict[SupportedModel, Callable[[PretrainedConfig, torch.dtype], TransformerConfig]] = {
+MODEL_CONFIG_CONVERTER_REGISTRY: Dict[SupportedModel, Callable[[PretrainedConfig, torch.dtype], TransformerConfig]] = {
     SupportedModel.LLAMA: hf_to_mcore_config_dense,
     SupportedModel.QWEN2: hf_to_mcore_config_dense,
     SupportedModel.QWEN2_MOE: hf_to_mcore_config_qwen2moe,
@@ -87,7 +83,7 @@ MODEL_CONFIG_CONVERTER_REGISTRY: dict[SupportedModel, Callable[[PretrainedConfig
 }
 
 # Registry for model initializers
-MODEL_INITIALIZER_REGISTRY: dict[SupportedModel, type[BaseModelInitializer]] = {
+MODEL_INITIALIZER_REGISTRY: Dict[SupportedModel, Type[BaseModelInitializer]] = {
     SupportedModel.LLAMA: DenseModel,
     SupportedModel.QWEN2: DenseModel,
     SupportedModel.QWEN2_MOE: Qwen2MoEModel,
@@ -101,7 +97,7 @@ MODEL_INITIALIZER_REGISTRY: dict[SupportedModel, type[BaseModelInitializer]] = {
 }
 
 # Registry for model forward functions
-MODEL_FORWARD_REGISTRY: dict[SupportedModel, Callable] = {
+MODEL_FORWARD_REGISTRY: Dict[SupportedModel, Callable] = {
     SupportedModel.LLAMA: gptmodel_forward,
     SupportedModel.QWEN2: gptmodel_forward,
     SupportedModel.QWEN2_MOE: gptmodel_forward,
@@ -115,23 +111,8 @@ MODEL_FORWARD_REGISTRY: dict[SupportedModel, Callable] = {
     SupportedModel.DEEPSEEK_V3: gptmodel_forward,
 }
 
-# Registry for model forward functions
-MODEL_FORWARD_FUSED_REGISTRY: dict[SupportedModel, Callable] = {
-    SupportedModel.LLAMA: fused_forward_gptmodel,
-    SupportedModel.QWEN2: fused_forward_gptmodel,
-    SupportedModel.QWEN2_MOE: fused_forward_gptmodel,
-    SupportedModel.MIXTRAL: fused_forward_gptmodel,
-    SupportedModel.DEEPSEEK_V3: fused_forward_gptmodel,
-    SupportedModel.QWEN2_5_VL: fused_forward_qwen2_5_vl,
-    SupportedModel.LLAMA4: fused_forward_gptmodel,
-    SupportedModel.QWEN3: fused_forward_gptmodel,
-    SupportedModel.QWEN3_MOE: fused_forward_gptmodel,
-    SupportedModel.QWEN2_5_VL: fused_forward_qwen2_5_vl,
-    SupportedModel.DEEPSEEK_V3: fused_forward_gptmodel,
-}
-
 # Registry for model weight converters
-MODEL_WEIGHT_CONVERTER_REGISTRY: dict[SupportedModel, type] = {
+MODEL_WEIGHT_CONVERTER_REGISTRY: Dict[SupportedModel, Type] = {
     SupportedModel.LLAMA: McoreToHFWeightConverterDense,
     SupportedModel.QWEN2: McoreToHFWeightConverterDense,
     SupportedModel.QWEN2_MOE: McoreToHFWeightConverterQwen2Moe,
@@ -216,15 +197,6 @@ def get_mcore_forward_fn(hf_config: PretrainedConfig) -> Callable:
     assert len(hf_config.architectures) == 1, "Only one architecture is supported for now"
     model = get_supported_model(hf_config.architectures[0])
     return MODEL_FORWARD_REGISTRY[model]
-
-
-def get_mcore_forward_fused_fn(hf_config: PretrainedConfig) -> Callable:
-    """
-    Get the forward function for given model architecture.
-    """
-    assert len(hf_config.architectures) == 1, "Only one architecture is supported for now"
-    model = get_supported_model(hf_config.architectures[0])
-    return MODEL_FORWARD_FUSED_REGISTRY[model]
 
 
 def get_mcore_weight_converter(hf_config: PretrainedConfig, dtype: torch.dtype) -> Callable:

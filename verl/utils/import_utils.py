@@ -21,7 +21,7 @@ import importlib.util
 import os
 import warnings
 from functools import cache, wraps
-from typing import Optional
+from typing import List, Optional
 
 
 @cache
@@ -72,7 +72,7 @@ def is_trl_available():
 def import_external_libs(external_libs=None):
     if external_libs is None:
         return
-    if not isinstance(external_libs, list):
+    if not isinstance(external_libs, List):
         external_libs = [external_libs]
     import importlib
 

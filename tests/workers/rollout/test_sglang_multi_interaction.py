@@ -117,11 +117,9 @@ class TestSGLangMultiInteraction:
 
         try:
             # Mock SGLang engine and initialization methods like the reference test
-            with (
-                patch.object(SGLangRollout, "_init_distributed_env", return_value=None),
-                patch.object(SGLangRollout, "_init_inference_engine", return_value=None),
-                patch.object(SGLangRollout, "_init_sampling_params", return_value=None),
-            ):
+            with patch.object(SGLangRollout, "_init_distributed_env", return_value=None), patch.object(
+                SGLangRollout, "_init_inference_engine", return_value=None
+            ), patch.object(SGLangRollout, "_init_sampling_params", return_value=None):
                 # Create a real tokenizer like the reference test
                 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B", padding_side="left")
                 tokenizer.pad_token = tokenizer.eos_token
@@ -174,11 +172,9 @@ class TestSGLangMultiInteraction:
         config, temp_config_path = create_mock_config_with_multi_interactions()
 
         try:
-            with (
-                patch.object(SGLangRollout, "_init_distributed_env", return_value=None),
-                patch.object(SGLangRollout, "_init_inference_engine", return_value=None),
-                patch.object(SGLangRollout, "_init_sampling_params", return_value=None),
-            ):
+            with patch.object(SGLangRollout, "_init_distributed_env", return_value=None), patch.object(
+                SGLangRollout, "_init_inference_engine", return_value=None
+            ), patch.object(SGLangRollout, "_init_sampling_params", return_value=None):
                 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B", padding_side="left")
                 tokenizer.pad_token = tokenizer.eos_token
 
@@ -286,11 +282,9 @@ class TestSGLangMultiInteraction:
         )
 
         try:
-            with (
-                patch.object(SGLangRollout, "_init_distributed_env", return_value=None),
-                patch.object(SGLangRollout, "_init_inference_engine", return_value=None),
-                patch.object(SGLangRollout, "_init_sampling_params", return_value=None),
-            ):
+            with patch.object(SGLangRollout, "_init_distributed_env", return_value=None), patch.object(
+                SGLangRollout, "_init_inference_engine", return_value=None
+            ), patch.object(SGLangRollout, "_init_sampling_params", return_value=None):
                 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B", padding_side="left")
                 tokenizer.pad_token = tokenizer.eos_token
 
@@ -327,11 +321,9 @@ class TestSGLangMultiInteraction:
         config, temp_config_path = create_mock_config_with_multi_interactions()
 
         try:
-            with (
-                patch.object(SGLangRollout, "_init_distributed_env", return_value=None),
-                patch.object(SGLangRollout, "_init_inference_engine", return_value=None),
-                patch.object(SGLangRollout, "_init_sampling_params", return_value=None),
-            ):
+            with patch.object(SGLangRollout, "_init_distributed_env", return_value=None), patch.object(
+                SGLangRollout, "_init_inference_engine", return_value=None
+            ), patch.object(SGLangRollout, "_init_sampling_params", return_value=None):
                 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B", padding_side="left")
                 tokenizer.pad_token = tokenizer.eos_token
 
@@ -396,11 +388,9 @@ class TestSGLangMultiInteraction:
             }
         )
 
-        with (
-            patch.object(SGLangRollout, "_init_distributed_env", return_value=None),
-            patch.object(SGLangRollout, "_init_inference_engine", return_value=None),
-            patch.object(SGLangRollout, "_init_sampling_params", return_value=None),
-        ):
+        with patch.object(SGLangRollout, "_init_distributed_env", return_value=None), patch.object(
+            SGLangRollout, "_init_inference_engine", return_value=None
+        ), patch.object(SGLangRollout, "_init_sampling_params", return_value=None):
             tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B", padding_side="left")
             tokenizer.pad_token = tokenizer.eos_token
 

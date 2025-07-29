@@ -169,7 +169,6 @@ def fit(self):
                         lam=self.config.algorithm.lam,
                         num_repeat=self.config.actor_rollout_ref.rollout.n,
                         norm_adv_by_std_in_grpo=norm_adv_by_std_in_grpo,
-                        config=self.config.algorithm,
                     )
 
                 # implement critic warmup

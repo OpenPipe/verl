@@ -18,10 +18,6 @@ MULTITURN=${MULTITURN:-False}
 LORA_RANK=${LORA_RANK:-0}
 RM_PAD=${RM_PAD:-True}
 
-TOTAL_TRAIN_STEP=${TOTAL_TRAIN_STEP:-1}
-RESUME_MODE=${RESUME_MODE:-disable}
-SAVE_FREQ=${SAVE_FREQ:-1}
-
 micro_bsz=2
 NUM_GPUS=8
 
@@ -53,11 +49,7 @@ torchrun --standalone --nnodes=1 --nproc_per_node=${NUM_GPUS} ${ENTRYPOINT} \
     trainer.default_local_dir="${ckpts_home}" \
     trainer.project_name="${project_name}" \
     trainer.experiment_name="${exp_name}" \
-    trainer.total_training_steps=${TOTAL_TRAIN_STEP} \
-    trainer.save_freq=${SAVE_FREQ} \
-    trainer.checkpoint.save_contents=[model,optimizer,extra,hf_model] \
-    trainer.max_ckpt_to_keep=1 \
-    trainer.resume_mode=${RESUME_MODE} \
+    trainer.total_training_steps=1 \
     trainer.logger=['console'] $@
 
 rm -rf "${ckpts_home:?}/*"

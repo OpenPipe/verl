@@ -16,36 +16,18 @@ import asyncio
 import contextlib
 import functools
 import inspect
-import os
 from typing import Optional
 
 
 class RolloutTraceConfig:
-    """Configuration for rollout tracing with various backends.
-
-    Singleton configuration class for managing rollout trace settings across different
-    tracing backends like Weave and MLflow.
-
-    Args:
-        backend (Optional[str]): Tracing backend to use ('weave', 'mlflow', or None).
-        client (Optional[object]): Client instance for the selected backend.
-        token2text (bool): Whether to convert tokens to text in traces. Defaults to False.
-        project_name (str): Name of the project for tracing.
-        experiment_name (str): Name of the experiment for tracing.
-    """
-
     _instance: Optional["RolloutTraceConfig"] = None
     backend: Optional[str] = None
     client: Optional[object] = None
     token2text: bool = False
-    _initialized: bool = False
-    project_name: str = None
-    experiment_name: str = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
         return cls._instance
 
     @classmethod
@@ -57,14 +39,10 @@ class RolloutTraceConfig:
     @classmethod
     def init(cls, project_name: str, experiment_name: str, backend: str, token2text: bool = False):
         config = cls.get_instance()
-        if config._initialized:
-            return
-
         config.backend = backend
         config.token2text = token2text
         config.project_name = project_name
         config.experiment_name = experiment_name
-
         if backend == "weave":
             import weave
 
@@ -72,17 +50,9 @@ class RolloutTraceConfig:
         elif backend == "mlflow":
             import mlflow
 
-            mlflow.config.enable_async_logging()
             config.client = mlflow
-
-            MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "sqlite:////tmp/mlruns.db")
-            mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-
-            mlflow.set_experiment(project_name)
         else:
             config.client = None
-
-        config._initialized = True
 
     @classmethod
     def get_backend(cls) -> Optional[str]:
@@ -102,19 +72,17 @@ class RolloutTraceConfig:
 
 
 @contextlib.contextmanager
-def rollout_trace_attr(sample_index=None, step=None, rollout_n=None, name="rollout_trace", validate=False):
+def rollout_trace_attr(sample_index=None, step=None, rollout_n=None):
     """A context manager to add attributes to a trace for the configured backend."""
     backend = RolloutTraceConfig.get_backend()
     attributes = {}
-    if backend:
-        if sample_index is not None:
-            attributes["sample_index"] = sample_index
-        if step is not None:
-            attributes["step"] = step
-        if rollout_n is not None:
-            attributes["rollout_n"] = rollout_n
-        attributes["validate"] = validate
-        attributes["experiment_name"] = RolloutTraceConfig.get_instance().experiment_name
+    if sample_index is not None:
+        attributes["sample_index"] = sample_index
+    if step is not None:
+        attributes["step"] = step
+    if rollout_n is not None:
+        attributes["rollout_n"] = rollout_n
+    attributes["experiment_name"] = RolloutTraceConfig.get_instance().experiment_name
 
     if not attributes or backend is None:
         yield
@@ -125,14 +93,17 @@ def rollout_trace_attr(sample_index=None, step=None, rollout_n=None, name="rollo
 
         with weave.attributes(attributes):
             yield
-    elif backend == "mlflow":
-        import mlflow
-
-        with mlflow.start_span(name=name) as span:
-            trace_id = span.trace_id
-            for key, value in attributes.items():
-                mlflow.set_trace_tag(trace_id, str(key), str(value))
-            yield
+    # TODO implement mlfow trace
+    # elif backend == "mlflow":
+    #     import mlflow
+    #     # This assumes a run is already active.
+    #     # We are setting tags for the current active run.
+    #     try:
+    #         mlflow.set_tags(attributes)
+    #     except Exception:
+    #         # Silently fail if there is no active run.
+    #         pass
+    #     yield
     else:
         yield
 
@@ -153,15 +124,15 @@ def rollout_trace_op(func):
 
         async def add_token2text(self, result):
             if hasattr(result, "prompt_ids") and hasattr(self, "tokenizer") and hasattr(self.tokenizer, "decode"):
-                _result = vars(result)
+                _result = [result]
                 loop = asyncio.get_running_loop()
                 if hasattr(result, "prompt_ids"):
                     prompt_text = await loop.run_in_executor(None, self.tokenizer.decode, result.prompt_ids)
-                    _result["prompt_text"] = prompt_text
+                    _result.append(prompt_text)
 
                 if hasattr(result, "response_ids"):
                     response_text = await loop.run_in_executor(None, self.tokenizer.decode, result.response_ids)
-                    _result["response_text"] = response_text
+                    _result.append(response_text)
                 return _result
             return result
 
@@ -185,20 +156,7 @@ def rollout_trace_op(func):
             except Exception as e:
                 tracer.finish_call(call, exception=e)
                 raise e
-        elif backend == "mlflow":
-            import mlflow
-
-            with mlflow.start_span(name=func.__qualname__) as span:
-                span.set_inputs(inputs)
-                result = await func(self, *args, **kwargs)
-                if enable_token2text:
-                    _result = await add_token2text(self, result)
-                    span.set_outputs(_result)
-                else:
-                    span.set_outputs(result)
-
-            return result
-
+        # TODO implement other backends such as mlflow
         else:
             return await func(self, *args, **kwargs)
 
@@ -227,10 +185,7 @@ def rollout_trace_op(func):
             except Exception as e:
                 tracer.finish_call(call, exception=e)
                 raise e
-        elif backend == "mlflow":
-            import mlflow
-
-            return mlflow.trace(func)(self, *args, **kwargs)
+        # TODO implement other backends such as mlflow
         else:
             return func(self, *args, **kwargs)
 

@@ -102,13 +102,6 @@ class BackwardEnum:
 
 @dataclass
 class Config:
-    """Configuration for efficient entropy kernel operations.
-
-    Args:
-        _backward (BackwardEnum): Backward computation method. Defaults to BackwardEnum._Split_Dlogits_N.
-        _use_triton (bool): Whether to use Triton kernels for computation. Defaults to True.
-    """
-
     _backward: BackwardEnum = BackwardEnum._Split_Dlogits_N
     _use_triton: bool = True
 
@@ -485,7 +478,7 @@ def efficient_entropy_forward(
     reduction: typing.Optional[int] = 2,
     temperature: typing.Optional[float] = 1.0,
     dist_process_group: typing.Optional[dist.ProcessGroup] = None,
-) -> list[torch.Tensor]:
+) -> typing.List[torch.Tensor]:
     """
     forward host function
     """
@@ -1362,7 +1355,7 @@ def efficient_entropy_backward(
     should_return_fp32_grad: bool = False,
     temperature: typing.Optional[float] = 1.0,
     dist_process_group: typing.Optional[dist.ProcessGroup] = None,
-) -> list[torch.Tensor]:
+) -> typing.List[torch.Tensor]:
     """
     backward host function
     """

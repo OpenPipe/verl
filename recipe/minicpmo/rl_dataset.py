@@ -19,7 +19,7 @@ import logging
 import math
 import os
 import re
-from typing import Optional
+from typing import Dict, List, Optional, Union
 
 import datasets
 import torch
@@ -88,7 +88,7 @@ def preprocess(
     assert conversations[0]["role"] == "user", "the first role must be user"
 
     if slice_config is not None:
-        assert isinstance(slice_config, dict)
+        assert isinstance(slice_config, Dict)
         assert "patch_size" in slice_config
         assert "max_slice_nums" in slice_config
         assert "scale_resolution" in slice_config
@@ -404,12 +404,12 @@ class RLHFDataset(Dataset):
 
     def __init__(
         self,
-        data_files: str | list[str],
+        data_files: Union[str, List[str]],
         tokenizer: PreTrainedTokenizer,
         config: DictConfig,
         processor: Optional[ProcessorMixin] = None,
     ):
-        if not isinstance(data_files, list | ListConfig):
+        if not isinstance(data_files, (List, ListConfig)):
             data_files = [data_files]
 
         self.data_files = copy.deepcopy(data_files)

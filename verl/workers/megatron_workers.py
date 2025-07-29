@@ -19,7 +19,7 @@ import datetime
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 import psutil
 import torch
@@ -43,18 +43,17 @@ from verl.utils.megatron_utils import (
     offload_megatron_model_to_cpu,
     offload_megatron_optimizer,
 )
-from verl.utils.memory_utils import aggressive_empty_cache
 from verl.utils.model import get_hf_model_path, load_mcore_dist_weights, load_megatron_gptmodel_weights
 from verl.utils.profiler import (
     DistProfiler,
     DistProfilerExtension,
     GPUMemoryLogger,
+    ProfilerConfig,
     log_gpu_memory_usage,
     simple_timer,
 )
 from verl.utils.profiler.performance import reduce_timing
 from verl.workers.actor.megatron_actor import MegatronPPOActor
-from verl.workers.config import McoreCriticConfig
 from verl.workers.critic.megatron_critic import MegatronPPOCritic
 from verl.workers.reward_model.megatron.reward_model import MegatronRewardModel
 
@@ -106,6 +105,8 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             )
             get_torch_device().set_device(rank)
 
+            if self.config.actor.megatron.sequence_parallel:
+                os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
             mpu.initialize_model_parallel(
                 tensor_model_parallel_size=self.config.actor.megatron.tensor_model_parallel_size,
                 pipeline_model_parallel_size=self.config.actor.megatron.pipeline_model_parallel_size,
@@ -127,7 +128,14 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         self._is_rollout = self.role in ["rollout", "actor_rollout", "actor_rollout_ref"]
         self._is_ref = self.role in ["ref", "actor_rollout_ref"]
 
-        profiler_config = omega_conf_to_dataclass(config.get("profiler"))
+        profiler_config: Optional[ProfilerConfig] = None
+        if self._is_actor:
+            profiler_config = omega_conf_to_dataclass(config.actor.get("profiler"))
+        if self._is_rollout:
+            profiler_config = omega_conf_to_dataclass(config.rollout.get("profiler"))
+        if self._is_ref:
+            profiler_config = omega_conf_to_dataclass(config.ref.get("profiler"))
+
         DistProfilerExtension.__init__(self, DistProfiler(rank=self.rank, config=profiler_config))
 
         # TODO(sgm): Currently, we only support reference model param offload
@@ -176,10 +184,6 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         )
         self.generation_config = get_generation_config(self.local_path)
 
-        override_ddp_config = OmegaConf.to_container(
-            OmegaConf.create(self.config.actor.megatron.get("override_ddp_config", {}))
-        )
-
         def make_model(wrap_with_ddp=False):
             if self.bridge is not None:
                 from verl.models.mcore.mbridge import freeze_moe_router
@@ -188,9 +192,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
                 if override_model_config.get("moe_config", {}).get("freeze_moe_router", False):
                     post_model_creation_callbacks.append(freeze_moe_router)
                 return self.bridge.get_model(
-                    post_model_creation_callbacks=post_model_creation_callbacks,
-                    wrap_with_ddp=wrap_with_ddp,
-                    optimizer_config=override_ddp_config,
+                    post_model_creation_callbacks=post_model_creation_callbacks, wrap_with_ddp=wrap_with_ddp
                 )
             else:
 
@@ -213,10 +215,9 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
                     megatron_actor_model_provider,
                     wrap_with_ddp=wrap_with_ddp,
                     use_distributed_optimizer=self.config.actor.megatron.use_distributed_optimizer,
-                    override_ddp_config=override_ddp_config,
                 )
 
-        if self._is_actor or self._is_rollout:
+        if self._is_actor and self._is_rollout:
             actor_module = make_model(wrap_with_ddp=True)
             print(f"actor_module: {len(actor_module)}")
             if self.config.actor.load_weight:
@@ -395,17 +396,17 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
 
         from verl.utils.torch_dtypes import PrecisionType
 
-        override_model_config = OmegaConf.to_container(OmegaConf.create(self.config.model.get("override_config", {})))
+        override_model_config = OmegaConf.to_container(self.config.model.get("override_config", OmegaConf.create()))
         if self._is_actor:
             override_transformer_config = OmegaConf.to_container(
-                OmegaConf.create(self.config.actor.megatron.get("override_transformer_config", {}))
+                self.config.actor.megatron.get("override_transformer_config", OmegaConf.create()), resolve=True
             )
         elif self._is_ref:
             override_transformer_config = OmegaConf.to_container(
-                OmegaConf.create(self.config.ref.megatron.get("override_transformer_config", {}))
+                self.config.ref.megatron.get("override_transformer_config", OmegaConf.create()), resolve=True
             )
         else:
-            override_transformer_config = {}
+            override_transformer_config = None
         self.param_dtype = torch.bfloat16
         log_gpu_memory_usage("Before init actor model and optimizer", logger=logger)
         self.dtype = PrecisionType.to_dtype(self.param_dtype)
@@ -432,9 +433,8 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
                 log_gpu_memory_usage("After offload actor optimizer during init", logger=logger)
 
         if self._is_actor:
-            actor_cfg = omega_conf_to_dataclass(self.config.actor)
             self.actor = MegatronPPOActor(
-                config=actor_cfg,
+                config=self.config.actor,
                 model_config=self.actor_model_config,
                 hf_config=self.hf_config,
                 tf_config=self.tf_config,
@@ -536,7 +536,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
             offload_megatron_optimizer(self.actor_optimizer)
             log_gpu_memory_usage("After offload actor optimizer during update_actor", logger=logger)
 
-        aggressive_empty_cache(force_sync=True)
+        get_torch_device().empty_cache()
         return output
 
     @register(dispatch_mode=Dispatch.DP_COMPUTE_PROTO)
@@ -573,7 +573,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         output.meta_info["timing"] = timing_generate
         output = output.to("cpu")
         # clear kv cache
-        aggressive_empty_cache(force_sync=True)
+        get_torch_device().empty_cache()
         return output
 
     @register(dispatch_mode=Dispatch.MEGATRON_COMPUTE_PROTO)
@@ -596,7 +596,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         if self._ref_is_offload_param:
             offload_megatron_model_to_cpu(self.ref_module)
             log_gpu_memory_usage("After offload ref params and grad during compute_ref_log_prob", logger=logger)
-        aggressive_empty_cache(force_sync=True)
+        get_torch_device().empty_cache()
         return output
 
     @register(dispatch_mode=Dispatch.MEGATRON_COMPUTE_PROTO)
@@ -623,7 +623,7 @@ class ActorRolloutRefWorker(MegatronWorker, DistProfilerExtension):
         if self._is_offload_param:
             offload_megatron_model_to_cpu(self.actor_module)
             log_gpu_memory_usage("After offload actor params and grad during compute_log_prob", logger=logger)
-        aggressive_empty_cache(force_sync=True)
+        get_torch_device().empty_cache()
         return output
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
@@ -673,7 +673,7 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
     # ============================ vLLM related ============================
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
-    def execute_method(self, method: str | bytes, *args, **kwargs):
+    def execute_method(self, method: Union[str, bytes], *args, **kwargs):
         """Called by ExternalRayDistributedExecutor collective_rpc."""
         if self.vllm_tp_rank == 0 and method != "execute_model":
             print(
@@ -694,7 +694,7 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
         return ret
 
     @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD, blocking=False)
-    async def generate(self, prompt_ids: list[int], sampling_params: dict[str, Any], request_id: str) -> list[int]:
+    async def generate(self, prompt_ids: List[int], sampling_params: Dict[str, Any], request_id: str) -> List[int]:
         ret = await self.rollout.generate(prompt_ids, sampling_params, request_id)
         return ret
 
@@ -714,10 +714,12 @@ class AsyncActorRolloutRefWorker(ActorRolloutRefWorker):
 
 
 class CriticWorker(MegatronWorker, DistProfilerExtension):
-    def __init__(self, config: McoreCriticConfig):
+    def __init__(self, config):
         MegatronWorker.__init__(self)
-        DistProfilerExtension.__init__(self, DistProfiler(rank=self.rank, config=config.get("profiler")))
-        self.config: McoreCriticConfig = config
+        DistProfilerExtension.__init__(
+            self, DistProfiler(rank=self.rank, config=omega_conf_to_dataclass(config.get("profiler")))
+        )
+        self.config = config
 
         # NOTE(sgm): We utilize colocate WorkerGroup by default.
         # As a result, Workers for different model share the same process.
@@ -734,6 +736,8 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
             )
             get_torch_device().set_device(rank)
 
+            if self.config.megatron.sequence_parallel:
+                os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
             mpu.initialize_model_parallel(
                 tensor_model_parallel_size=self.config.megatron.tensor_model_parallel_size,
                 pipeline_model_parallel_size=self.config.megatron.pipeline_model_parallel_size,
@@ -780,9 +784,6 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
             self.config.megatron.use_mbridge,
         )
 
-        override_ddp_config = OmegaConf.to_container(
-            OmegaConf.create(self.config.megatron.get("override_ddp_config", {}))
-        )
         if self.bridge is not None:
             from verl.models.mcore.mbridge import freeze_moe_router, make_value_model
 
@@ -790,9 +791,7 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
             if override_model_config.get("moe_config", {}).get("freeze_moe_router", False):
                 post_model_creation_callbacks.append(freeze_moe_router)
             critic_module = self.bridge.get_model(
-                post_model_creation_callbacks=post_model_creation_callbacks,
-                wrap_with_ddp=True,
-                optimizer_config=override_ddp_config,
+                post_model_creation_callbacks=post_model_creation_callbacks, wrap_with_ddp=True
             )
         else:
 
@@ -817,7 +816,6 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
                 model_type=ModelType.encoder_or_decoder,
                 wrap_with_ddp=True,
                 use_distributed_optimizer=self.config.megatron.use_distributed_optimizer,
-                override_ddp_config=override_ddp_config,
             )
         # note that here critic_module will be a list to be compatible with the construction of interleaved pp (vpp).
         # but here, we do not use pp (vpp) yet. For simplicity, we remove the list
@@ -863,9 +861,9 @@ class CriticWorker(MegatronWorker, DistProfilerExtension):
             import importlib
 
             importlib.import_module(self.config.model.external_lib)
-        override_model_config = OmegaConf.to_container(OmegaConf.create(self.config.model.get("override_config", {})))
+        override_model_config = OmegaConf.to_container(self.config.model.get("override_config", OmegaConf.create()))
         override_transformer_config = OmegaConf.to_container(
-            OmegaConf.create(self.config.megatron.get("override_transformer_config", {}))
+            self.config.megatron.get("override_transformer_config", OmegaConf.create()), resolve=True
         )
         self.param_dtype = torch.bfloat16
         self.dtype = PrecisionType.to_dtype(self.param_dtype)
@@ -1014,6 +1012,8 @@ class RewardModelWorker(MegatronWorker, DistProfilerExtension):
             )
             get_torch_device().set_device(rank)
 
+            if self.config.megatron.sequence_parallel:
+                os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
             mpu.initialize_model_parallel(
                 tensor_model_parallel_size=self.config.megatron.tensor_model_parallel_size,
                 pipeline_model_parallel_size=self.config.megatron.pipeline_model_parallel_size,
@@ -1110,9 +1110,9 @@ class RewardModelWorker(MegatronWorker, DistProfilerExtension):
             import importlib
 
             importlib.import_module(self.config.model.external_lib)
-        override_model_config = OmegaConf.to_container(OmegaConf.create(self.config.model.get("override_config", {})))
+        override_model_config = OmegaConf.to_container(self.config.model.get("override_config", OmegaConf.create()))
         override_transformer_config = OmegaConf.to_container(
-            OmegaConf.create(self.config.megatron.get("override_transformer_config", {}))
+            self.config.megatron.get("override_transformer_config", OmegaConf.create()), resolve=True
         )
 
         use_shm = self.config.model.get("use_shm", False)

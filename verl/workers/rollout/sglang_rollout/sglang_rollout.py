@@ -16,13 +16,16 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import logging
 import multiprocessing as mp
 import os
 import time
+import uuid
 from copy import deepcopy
 from json import JSONDecodeError
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Union
 from uuid import uuid4
 
 import numpy as np
@@ -30,6 +33,7 @@ import sglang.srt.entrypoints.engine
 import torch
 import torch.distributed as dist
 from omegaconf import DictConfig
+from openpipe.client import AsyncOpenPipe
 from sglang.srt.managers.tokenizer_manager import (
     ReleaseMemoryOccupationReqInput,
     ResumeMemoryOccupationReqInput,
@@ -50,14 +54,25 @@ from sglang.srt.utils import (
 from tensordict import TensorDict
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 from torch.nn.utils.rnn import pad_sequence
+from tqdm.asyncio import tqdm_asyncio
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, ProcessorMixin
 
 from verl import DataProto
 from verl.interactions.base import BaseInteraction
 from verl.interactions.utils.interaction_registry import initialize_interactions_from_config
+
+# Add tau-bench import
+from verl.tau_bench.envs import get_env
+from verl.tau_bench.envs.user import LLMUserSimulationEnv
+from verl.tau_bench.types import Action
 from verl.third_party.sglang import parallel_state as sglang_ps
 from verl.tools.base_tool import BaseTool
-from verl.tools.schemas import OpenAIFunctionCallSchema, OpenAIFunctionParsedSchema, OpenAIFunctionToolCall
+from verl.tools.schemas import (
+    OpenAIFunctionCallSchema,
+    OpenAIFunctionParsedSchema,
+    OpenAIFunctionToolCall,
+    OpenAIFunctionToolSchema,
+)
 from verl.tools.utils.tool_registry import initialize_tools_from_config
 from verl.utils.net_utils import is_ipv6
 from verl.utils.profiler import GPUMemoryLogger
@@ -206,9 +221,7 @@ def _post_process_outputs(processing_class, output):
 
     def _map_each_response(resp):
         output_token_logprobs = resp["meta_info"]["output_token_logprobs"]
-        log_probs, output_token_ids = zip(
-            *[(log_prob, token_ids) for log_prob, token_ids, _ in output_token_logprobs], strict=True
-        )
+        log_probs, output_token_ids = zip(*[(log_prob, token_ids) for log_prob, token_ids, _ in output_token_logprobs])
         return torch.tensor(output_token_ids), torch.tensor(log_probs)
 
     out_map = map(lambda x: _map_each_response(x), output)
@@ -225,7 +238,7 @@ def _post_process_outputs(processing_class, output):
 
 
 def get_tool_call_parser_type(
-    processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
+    processing_class: Union[PreTrainedTokenizer, PreTrainedTokenizerFast, ProcessorMixin],
 ) -> str:
     items = FunctionCallParser.ToolCallParserEnum.items()
     for parser_type, parser_cls in items:
@@ -248,12 +261,80 @@ def get_tool_call_parser_type(
         raise ValueError(f"No tool call parser found for processing_class {processing_class}")
 
 
+def create_response_payload(response_str: Optional[str] = None) -> dict[str, Any]:
+    return {
+        "id": f"chatcmpl-dummy-{str(uuid.uuid4())}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": "dummy-model",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "content": response_str or "Dummy Response",
+                    "role": "assistant",
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def clean_messages(messages: list[dict]) -> list[dict]:
+    """
+    Clean the messages to remove the system message and the assistant message.
+    """
+    clean_messages = []
+    for idx, m in enumerate(messages):
+        new_m = {k: v for k, v in m.items() if v is not None and v != ""}
+        if new_m["role"] == "assistant" and new_m.get("tool_calls", None):
+            if len(new_m["tool_calls"]) >= 1:
+                new_m["tool_calls"] = [new_m["tool_calls"][0]]
+                new_m["tool_calls"][0]["function"]["arguments"] = json.dumps(
+                    new_m["tool_calls"][0]["function"]["arguments"]
+                )
+        elif new_m["role"] == "tool" and new_m.get("tool_call_id", None) is None:
+            new_m["tool_call_id"] = str(clean_messages[idx - 1]["tool_calls"][0]["id"])
+
+        clean_messages.append(new_m)
+    return clean_messages
+
+
+async def log_to_openpipe(
+    req: AsyncRolloutRequest,
+    metadata: dict,
+) -> None:
+    """
+    Push one trajectory to Langfuse with task_idx and step for comparison.
+    """
+    # Initialize langfuse
+    op_client = AsyncOpenPipe(api_key=os.environ["OPENPIPE_API_KEY"])
+    resp_payload = create_response_payload()
+    messages = copy.deepcopy(req.messages)
+    messages = [m.model_dump(exclude_none=True) for m in messages]
+    messages = clean_messages(messages)
+    tools = [t.model_dump() for t in req.tool_schemas] if req.tool_schemas else []
+
+    await op_client.report(
+        req_payload={
+            "model": os.getenv("MODEL_NAME", "verl-test-no-model-name"),
+            "messages": messages,
+            "tools": tools,
+            "metadata": {k: str(v) for k, v in metadata.items()},
+        },
+        resp_payload=resp_payload,
+        status_code=200,
+    )
+    await op_client.base_client._client_wrapper.httpx_client.aclose()
+
+
 class SGLangRollout(BaseRollout):
     def __init__(
         self,
         actor_module: str,
         config: DictConfig,
-        processing_class: PreTrainedTokenizer | PreTrainedTokenizerFast | ProcessorMixin,
+        processing_class: Union[PreTrainedTokenizer, PreTrainedTokenizerFast, ProcessorMixin],
         model_hf_config,
         port=None,
         trust_remote_code: bool = False,
@@ -286,13 +367,14 @@ class SGLangRollout(BaseRollout):
         self.config = config
         self._device_mesh_cpu = device_mesh
         os.environ.setdefault("SGL_DISABLE_TP_MEMORY_INBALANCE_CHECK", "true")
+        print("initializing SGLangRollout")
 
         (
-            self._tool_schemas,
-            self._tool_map,
+            self._tool_schemas,  # imp
+            self._tool_map,  # one place, but can be overridden
             self._tool_call_parser_type,
             self._sgl_tools,
-            self._function_call_parser,
+            self._function_call_parser,  # imp
         ) = self._initialize_tools(config, processing_class)
         self.interaction_map: dict[str, BaseInteraction] = self._initialize_interactions(config)
         # If turn on `free_cache_engine`, SGLang engine's KV cache
@@ -510,15 +592,34 @@ class SGLangRollout(BaseRollout):
                   The active parser instance responsible for extracting
                   structured tool calls from model outputs.
         """
+        print("initializing tools")
         if config.multi_turn.tool_config_path is None:
             return [], {}, None, [], None
 
-        tools_config_file = config.multi_turn.tool_config_path
-        tool_list = initialize_tools_from_config(tools_config_file)
+        def get_tau_bench_tools():
+            from tau_bench.envs.airline.tools import ALL_TOOLS as AIRLINE_TOOLS
+            from tau_bench.envs.retail.tools import ALL_TOOLS as RETAIL_TOOLS
 
-        logger.info(f"Initialize tools from configuration.: tool_list: {tool_list}")
-        tool_schemas = [tool.get_openai_tool_schema().model_dump() for tool in tool_list]
-        tool_map = {tool.name: tool for tool in tool_list}
+            if os.getenv("ENV_NAME") == "retail":
+                ALL_TOOLS = RETAIL_TOOLS
+            elif os.getenv("ENV_NAME") == "airline":
+                ALL_TOOLS = AIRLINE_TOOLS
+            else:
+                raise ValueError(f"Unknown environment: {os.getenv('ENV_NAME')}")
+
+            tool_schemas = [tool.get_info() for tool in ALL_TOOLS]
+            tool_map = {}
+            return tool_schemas, tool_map
+
+        tools_config_file = config.multi_turn.tool_config_path
+        if "tau-bench" in tools_config_file:
+            print("initializing tau-bench tools")
+            tool_schemas, tool_map = get_tau_bench_tools()
+        else:
+            tool_list = initialize_tools_from_config(tools_config_file)
+            tool_schemas = [tool.get_openai_tool_schema().model_dump() for tool in tool_list]
+            tool_map = {tool.name: tool for tool in tool_list}
+
         tool_call_parser_type = get_tool_call_parser_type(processing_class)
         sgl_tools = [Tool.model_validate(tool_schema) for tool_schema in tool_schemas]
         function_call_parser = FunctionCallParser(
@@ -572,7 +673,9 @@ class SGLangRollout(BaseRollout):
             responses:     |<- LLM generation ->|<- tool_calls ->|<- LLM generation ->|<- padding ->|
             response_mask: | 1, 1, 1, ..., 1, 1 | 0, 0, .., 0, 0 | 1, 1, 1, ..., 1, 1 | 0, 0, ..., 0|
         """
+        # print("inside generate_sequences")
         if self.config.multi_turn.enable:
+            # print("pointing to req_level_generate_sequences since multi_turn is enabled")
             return self._req_level_generate_sequences(prompts, **kwargs)
         return self._batch_level_generate_sequences(prompts, **kwargs)
 
@@ -644,7 +747,6 @@ class SGLangRollout(BaseRollout):
             for raw_prompt_ids, multi_modal_data in zip(
                 non_tensor_batch.pop("raw_prompt_ids"),
                 non_tensor_batch.pop("multi_modal_data"),
-                strict=True,
             ):
                 sglang_inputs.append(
                     {
@@ -780,7 +882,7 @@ class SGLangRollout(BaseRollout):
             batch["rollout_log_probs"] = rollout_log_probs
 
         # free cache engine
-        if self._engine is not None and self._tp_rank == 0:
+        if self._engine is not None:
             loop = asyncio.get_event_loop()
             loop.run_until_complete(self._engine.flush_cache())
 
@@ -852,7 +954,7 @@ class SGLangRollout(BaseRollout):
                         ]
                     )
                     _req.add_tool_response_messages(self.processing_class, [resp for resp, _, _ in tool_call_results])
-                    for tool_call, (resp, reward, metrics) in zip(parsed_tool_calls, tool_call_results, strict=True):
+                    for tool_call, (resp, reward, metrics) in zip(parsed_tool_calls, tool_call_results):
                         _req.update_metrics(metrics, tool_call.function.name)
                     if len(_req.input_ids) >= self.config.max_model_len:
                         finish_reason_type = FinishReasonTypeEnum.STOP
@@ -994,6 +1096,222 @@ class SGLangRollout(BaseRollout):
 
         return _req
 
+    async def _async_rollout_a_request_tau_bench(
+        self,
+        req: AsyncRolloutRequest,
+        do_sample: bool = True,
+        is_validate: bool = False,
+        global_steps: int = 0,
+        **kwargs,
+    ) -> AsyncRolloutRequest:
+        # print("inside async_rollout_a_request_tau_bench")
+        assert self._tp_rank == 0, "only the master process can call this function"
+        _req = deepcopy(req)
+        finish_reason_type = None
+        output = None
+
+        current_turns = 0
+        issue_str = "no_issue"
+        user_turn_rewards = []
+        reward = 0
+
+        # Create request-level sampling parameters
+        request_sampling_params = self.sampling_params.copy()
+        if not do_sample:
+            request_sampling_params.update(
+                {
+                    "n": 1,
+                    "presence_penalty": 0.0,
+                    "frequency_penalty": 0.0,
+                    "repetition_penalty": 1.0,
+                    "temperature": 0,
+                    "top_p": 1,
+                    "top_k": -1,
+                    "ignore_eos": False,
+                    "min_new_tokens": 0,
+                    "max_new_tokens": self.config.response_length,
+                    "skip_special_tokens": True,
+                    "spaces_between_special_tokens": True,
+                }
+            )
+        elif is_validate:
+            request_sampling_params.update(
+                {
+                    "top_k": self.config.val_kwargs.top_k,
+                    "top_p": self.config.val_kwargs.top_p,
+                    "temperature": self.config.val_kwargs.temperature,
+                    "n": 1,  # if validate, already repeat in ray_trainer
+                }
+            )
+
+        # Update with any additional kwargs
+        request_sampling_params.update(kwargs)
+
+        task_index = _req.tau_task_index
+        env = get_env(
+            env_name=os.getenv("ENV_NAME"),
+            user_strategy="llm",
+            user_model="gpt-4.1",
+            user_provider="openai",
+            task_split="test" if is_validate else os.getenv("TRAIN_SPLIT_NAME"),
+            task_index=task_index,
+        )
+        await env.reset(task_index=task_index)
+        # assert isinstance(env.user, LLMUserSimulationEnv), "env.user must be an instance of LLMUserSimulationEnv"
+        env.user.messages.pop()  # remove the user message generated by the env.reset()
+        env.user.messages.append(
+            {"role": "user", "content": _req.messages[-1].content}
+        )  # add the user message from the request instead
+
+        # _req.messages = []
+        # # add system message
+        # _req.messages.append(
+        #     Message(
+        #         role="system",
+        #         content=env.wiki,
+        #     )
+        # )
+        # add user message
+        # _req.add_user_message(self.processing_class, env_reset_res.observation)
+        _req.state = AsyncRolloutRequestStateEnum.RUNNING
+
+        # print("starting the while loop inside rollout")
+
+        # def print_messages(messages):
+        #     print("--------------------------------")
+        #     for message in messages:
+        #         print(f"{message.role}: {message.content}\n\n")
+        #     print("--------------------------------")
+
+        while current_turns < self.config.multi_turn.max_assistant_turns:
+            # print_messages(_req.messages[1:])
+            # Only continue the conversation if the prompt length is not greater than max_model_len - 1,
+            # since SGLang raises an error when max_new_tokens + 1 is greater to max_model_len (the extra
+            # token accounts for the EOS token).
+            if len(_req.get_generation_prompt_ids(self.processing_class)) + 1 >= self.config.max_model_len:
+                issue_str = "max_model_len_reached"
+                finish_reason_type = FinishReasonTypeEnum.LENGTH
+                _req.state = AsyncRolloutRequestStateEnum.COMPLETED
+                break
+
+            # Video support is not implemented yet
+            image_data = (
+                _req.multi_modal_data["image"] if _req.multi_modal_data and "image" in _req.multi_modal_data else None
+            )
+            video_data = (
+                _req.multi_modal_data["video"] if _req.multi_modal_data and "video" in _req.multi_modal_data else None
+            )
+            if video_data:
+                logger.warning(
+                    "video support is not implemented yet, current length of video data is %d", len(video_data)
+                )
+
+            output = await self._handle_engine_call(_req, request_sampling_params, image_data=image_data)
+            content = output["text"]
+            finish_reason_type = FinishReasonTypeEnum.from_str(output["meta_info"]["finish_reason"]["type"])
+            current_turns += 1
+            if finish_reason_type == FinishReasonTypeEnum.LENGTH:
+                issue_str = "max_new_tokens_limit_reached"
+                _req.add_assistant_message(self.processing_class, content)
+                _req.state = AsyncRolloutRequestStateEnum.COMPLETED
+                break
+            else:
+                if self._function_call_parser and self._function_call_parser.has_tool_call(content):
+                    finish_reason_type = FinishReasonTypeEnum.TOOL_CALL
+                    _req.state = AsyncRolloutRequestStateEnum.TOOL_CALLING
+                    try:
+                        normed_content, tool_calls = self._function_call_parser.parse_non_stream(content)
+                    except JSONDecodeError:
+                        normed_content = content
+                        tool_calls = []
+                    except AttributeError:
+                        normed_content = content
+                        tool_calls = []
+
+                    has_decode_error = True
+                    if len(tool_calls) > 0:
+                        tool_call = tool_calls[0]  # keep only one tool call
+
+                        function, has_decode_error = OpenAIFunctionCallSchema.from_openai_function_parsed_schema(
+                            OpenAIFunctionParsedSchema(
+                                name=tool_call.name,
+                                arguments=tool_call.parameters,
+                            )
+                        )
+                    # Drop the tool call if its arguments has decode error
+                    if has_decode_error:
+                        issue_str = "tool_decode_error"
+                        _req.add_assistant_message(self.processing_class, content)
+                        finish_reason_type = FinishReasonTypeEnum.STOP
+                        _req.state = AsyncRolloutRequestStateEnum.COMPLETED
+                        break
+                    else:
+                        parsed_tool_call = OpenAIFunctionToolCall(
+                            id=str(tool_call.tool_index),
+                            function=function,
+                        )
+                        _req.add_assistant_message(self.processing_class, normed_content, tool_calls=[parsed_tool_call])
+                else:
+                    _req.add_assistant_message(
+                        self.processing_class,
+                        content,
+                    )
+                    _req.state = AsyncRolloutRequestStateEnum.INTERACTING
+
+            if _req.state == AsyncRolloutRequestStateEnum.TOOL_CALLING:
+                action = Action(name=parsed_tool_call.function.name, kwargs=parsed_tool_call.function.arguments)
+            elif _req.state == AsyncRolloutRequestStateEnum.INTERACTING:
+                action = Action(name="respond", kwargs={"content": content})
+            elif _req.state == AsyncRolloutRequestStateEnum.COMPLETED:
+                raise ValueError("Should never have reached COMPLETED state but stay in loop")
+            else:
+                raise ValueError(f"Invalid state: {_req.state}")
+
+            env_response = await env.step(action)
+            reward = env_response.reward
+            user_turn_rewards.append(reward)  # again, makes no sense, but keeping it for now
+            if env_response.done:
+                finish_reason_type = FinishReasonTypeEnum.STOP
+                _req.state = AsyncRolloutRequestStateEnum.COMPLETED
+                break
+
+            if action.name == "respond":
+                _req.add_user_message(self.processing_class, env_response.observation)
+            else:
+                _req.add_tool_response_messages(self.processing_class, [env_response.observation])
+                # _req.update_metrics(metrics, tool_call.function.name) # some tool level reward which makes no sense.
+                # will add if it breaks things
+
+        if current_turns >= self.config.multi_turn.max_assistant_turns:
+            issue_str = "max_assistant_turns_reached"
+            finish_reason_type = FinishReasonTypeEnum.STOP
+
+        reward_dict = {"tau_bench_reward": [reward]}
+        # print("returning reward_dict", reward_dict)
+        _req.finalize(self.processing_class, reward_dict, finish_reason_type)  # reward is the weird one to fix
+
+        metadata = {
+            "task_index": task_index,
+            "split": "test" if is_validate else "train",
+            "batch_data_id": _req.batch_data_id,
+            "rollout_offset": _req.rollout_offset,
+            "request_id": _req.request_id,
+            "current_turns": current_turns,
+            "reward": reward,
+            "issue_str": issue_str,
+            "training_step": global_steps,
+        }
+
+        try:
+            await log_to_openpipe(
+                _req,
+                metadata,
+            )
+        except Exception as e:
+            print(f"WARNING: Error logging to openpipe: {e}")
+
+        return _req
+
     async def _handle_engine_call(
         self, _req: AsyncRolloutRequest, sampling_params: dict, image_data: Optional[list[Any]] = None
     ) -> dict:
@@ -1058,15 +1376,22 @@ class SGLangRollout(BaseRollout):
         # Async rollout with tools support
         do_sample = prompts.meta_info.get("do_sample", True)
         is_validate = prompts.meta_info.get("validate", False)
+        global_steps = prompts.meta_info.get("global_steps", 0)
         tgt_device = prompts.batch["input_ids"].device
         if self._tp_rank == 0:
             req_list = self._preprocess_prompt_to_async_rollout_requests(
                 prompts,
             )
+            # print("pointing to async_rollout_a_request_tau_bench now")
             loop = asyncio.get_event_loop()
             output_req_list = loop.run_until_complete(
-                asyncio.gather(
-                    *[self._async_rollout_a_request(req, do_sample, is_validate, **kwargs) for req in req_list],
+                tqdm_asyncio.gather(
+                    *[
+                        self._async_rollout_a_request_tau_bench(req, do_sample, is_validate, global_steps, **kwargs)
+                        for req in req_list
+                    ],
+                    desc="Async Rollout Requests",
+                    total=len(req_list),
                 )
             )
             sorted_output_req_list = sorted(output_req_list, key=lambda x: (x.batch_data_id, x.rollout_offset))
@@ -1089,7 +1414,6 @@ class SGLangRollout(BaseRollout):
         messages = []
         reward_scores = []
         multi_modal_inputs = []
-        request_ids = []
 
         for req in sorted_output_req_list:
             assert req.state == AsyncRolloutRequestStateEnum.COMPLETED, f"Request {req.request_id} is not completed"
@@ -1129,7 +1453,6 @@ class SGLangRollout(BaseRollout):
             messages.append({"messages": req.messages})
             reward_scores.append(req.reward_scores)
             multi_modal_inputs.append(req.multi_modal_inputs)
-            request_ids.append(req.request_id)
 
         prompt_ids = pad_sequence(
             prompt_ids,
@@ -1217,22 +1540,13 @@ class SGLangRollout(BaseRollout):
             loop = asyncio.get_event_loop()
             loop.run_until_complete(self._engine.flush_cache())
 
-        non_tensor_batch = {
-            "messages": np.array(messages),
-            "reward_scores": np.array(reward_scores),
-            "request_id": np.array(request_ids),
-        }
-
-        is_multimodal = isinstance(self.processing_class, ProcessorMixin) and (
-            hasattr(self.processing_class, "image_processor") or hasattr(self.model_hf_config, "vision_config")
-        )
-
-        if is_multimodal:
-            non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs, dtype=object)
-
         return DataProto(
             batch=batch,
-            non_tensor_batch=non_tensor_batch,
+            non_tensor_batch={
+                "messages": np.array(messages),
+                "reward_scores": np.array(reward_scores),
+                "multi_modal_inputs": np.array(multi_modal_inputs, dtype=object),
+            },
         )
 
     def _preprocess_prompt_to_async_rollout_requests(self, prompts: DataProto, n: int = 1) -> list[AsyncRolloutRequest]:
@@ -1248,11 +1562,12 @@ class SGLangRollout(BaseRollout):
         )
 
         for data_idx, (raw_prompt, multi_modal_data) in enumerate(
-            zip(prompts.non_tensor_batch["raw_prompt"], multi_modal_data_list, strict=True)
+            zip(prompts.non_tensor_batch["raw_prompt"], multi_modal_data_list)
         ):
             if self._tool_schemas:
                 _tools_kwargs = prompts.non_tensor_batch["tools_kwargs"][data_idx]
-                _tool_schemas = [self._tool_map[k].get_openai_tool_schema() for k in _tools_kwargs.keys()]
+                # _tool_schemas = [self._tool_map[k].get_openai_tool_schema() for k in _tools_kwargs.keys()]
+                _tool_schemas = [OpenAIFunctionToolSchema(**tool) for tool in self._tool_schemas]  # UPDATED
                 _input_ids = None
                 _attention_mask = None
             else:
@@ -1265,6 +1580,12 @@ class SGLangRollout(BaseRollout):
                 _interaction_kwargs = prompts.non_tensor_batch["interaction_kwargs"][data_idx]
             else:
                 _interaction_kwargs = {}
+
+            # print("prompts.non_tensor_batch", prompts.non_tensor_batch)
+            # print("prompts.batch", prompts.batch)
+
+            # print("prompts.non_tensor_batch keys", prompts.non_tensor_batch.keys())
+            # print("prompts.batch keys", prompts.batch.keys())
 
             req = AsyncRolloutRequest(
                 batch_data_id=data_idx,
@@ -1289,6 +1610,7 @@ class SGLangRollout(BaseRollout):
                 use_inference_chat_template=self.config.multi_turn.use_inference_chat_template,
                 tokenization_sanity_check_mode=self.config.multi_turn.tokenization_sanity_check_mode,
                 processing_class=self.processing_class,
+                tau_task_index=prompts.non_tensor_batch["index"][data_idx],
             )
             error_message = f"""Request {req.request_id} has mismatched lengths: 
             input_ids={req.input_ids.shape[-1]}, 

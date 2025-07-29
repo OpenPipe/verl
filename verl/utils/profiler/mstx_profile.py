@@ -14,10 +14,9 @@
 
 # Inspired from https://gitee.com/ascend/MindSpeed-RL/blob/master/mindspeed_rl/utils/utils.py
 import functools
-import logging
 import os
 from contextlib import contextmanager
-from typing import Any, Callable, Optional
+from typing import Callable, Dict, Optional
 
 import torch_npu
 from omegaconf import DictConfig
@@ -62,7 +61,7 @@ def mark_annotate(message: Optional[str] = None) -> Callable:
 
 
 @contextmanager
-def marked_timer(name: str, timing_raw: dict[str, float], *args: Any, **kwargs: Any) -> None:
+def marked_timer(name: str, timing_raw: Dict[str, float], **kwargs):
     """Context manager for timing with MSTX markers.
 
     This utility function measures the execution time of code within its context,
@@ -75,10 +74,6 @@ def marked_timer(name: str, timing_raw: dict[str, float], *args: Any, **kwargs: 
     Yields:
         None: This is a context manager that yields control back to the code block.
     """
-    if args:
-        logging.warning(f"Args are not supported in mstx_profile, but received: {args}")
-    if kwargs:
-        logging.warning(f"Kwargs are not supported in mstx_profile, but received: {kwargs}")
     mark_range = mark_start_range(message=name)
     from .performance import _timer
 
@@ -202,36 +197,20 @@ class NPUProfiler(DistProfiler):
             @functools.wraps(func)
             def wrapper(self, *args, **kwargs):
                 profile_name = message or func.__name__
-                profile_this_role = True
-                discrete_mode = self.profiler.discrete
-                profile_enable = self.profiler.this_step and self.profile_option is not None
 
-                if not profile_enable:
-                    return func(self, *args, **kwargs)
-
-                if profile_enable and role is not None:
-                    target_roles = self.profile_option.get("roles", [])
-                    profile_this_role = "all" in target_roles or role in target_roles
-
-                if profile_enable:
-                    if not discrete_mode:
-                        mark_range = mark_start_range(message=profile_name)
-                    else:
-                        if profile_this_role:
-                            profile_npu = get_npu_profiler(option=self.profile_option, role=role)
-                            profile_npu.start()
-                            mark_range = mark_start_range(message=profile_name)
+                if self.profiler.this_step and self.profile_option is not None:
+                    if self.profiler.discrete:
+                        profile_npu = get_npu_profiler(option=self.profile_option, role=role)
+                        profile_npu.start()
+                    mark_range = mark_start_range(message=profile_name)
 
                 result = func(self, *args, **kwargs)
 
-                if profile_enable:
-                    if not discrete_mode:
-                        mark_end_range(mark_range)
-                    else:
-                        if profile_this_role:
-                            mark_end_range(mark_range)
-                            profile_npu.step()
-                            profile_npu.stop()
+                if self.profiler.this_step and self.profile_option is not None:
+                    mark_end_range(mark_range)
+                    if self.profiler.discrete:
+                        profile_npu.step()
+                        profile_npu.stop()
 
                 return result
 

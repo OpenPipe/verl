@@ -80,6 +80,13 @@ class NaiveRewardManager:
             num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
             extra_info["num_turns"] = num_turns
 
+            # Pass reward_scores to extra_info for custom compute_score functions
+            if "reward_scores" in data_item.non_tensor_batch:
+                # print(f"DEBUG: reward_scores: {data_item.non_tensor_batch['reward_scores']}")
+                extra_info["reward"] = data_item.non_tensor_batch["reward_scores"]["tau_bench_reward"][0]
+                # extra_info["task_idxs"] = data_item.non_tensor_batch["task_idxs"]
+                # extra_info["messages"] = data_item.non_tensor_batch["messages"]
+
             score = self.compute_score(
                 data_source=data_source,
                 solution_str=response_str,
