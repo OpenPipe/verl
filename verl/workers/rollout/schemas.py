@@ -118,6 +118,8 @@ class AsyncRolloutRequest(BaseModel):
     base_conv_wo_gen_prompt_end_pos: int
     base_conv_with_gen_prompt_end_pos: int
 
+    tau_task_index: Optional[int] = None
+
     @model_validator(mode="before")
     @classmethod
     def initialize_request(cls, values):
